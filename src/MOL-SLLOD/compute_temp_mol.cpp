@@ -37,7 +37,7 @@ using namespace LAMMPS_NS;
 /* ---------------------------------------------------------------------- */
 
 ComputeTempMol::ComputeTempMol(LAMMPS *lmp, int narg, char **arg) :
-  Compute(lmp, narg, arg), vcm(nullptr), vcmall(nullptr), molprop(nullptr),
+  Compute(lmp, narg, arg), molprop(nullptr),
   id_molprop(nullptr)
 {
   if (narg != 4) error->all(FLERR,"Illegal compute temp/mol command");
@@ -68,13 +68,6 @@ ComputeTempMol::ComputeTempMol(LAMMPS *lmp, int narg, char **arg) :
 ComputeTempMol::~ComputeTempMol()
 {
   delete [] vector;
-
-  // property_molecule may have already been destroyed
-  molprop = dynamic_cast<FixPropertyMol*>(modify->get_fix_by_id(id_molprop));
-  if (molprop != nullptr) {
-    molprop->destroy_permolecule(&vcmall);
-    molprop->destroy_permolecule(&vcm);
-  }
   delete [] id_molprop;
 }
 
@@ -92,8 +85,7 @@ void ComputeTempMol::init()
     error->all(FLERR, "Fix property/mol must be defined for the same group as compute temp/mol");
 
   molprop->request_mass();
-  molprop->register_permolecule("temp/mol:vcmall", &vcmall, Atom::DOUBLE, 3);
-  molprop->register_permolecule("temp/mol:vcm", &vcm, Atom::DOUBLE, 3);
+  molprop->request_vcm(); 
 }
 
 void ComputeTempMol::setup()
@@ -113,6 +105,8 @@ double ComputeTempMol::compute_scalar()
 
   tagint molmax = molprop->molmax;
   double *molmass = molprop->mass;
+  double **vcm = molprop->vcm;
+  double *ke_singles = molprop->ke_singles;
 
   // calculate global temperature
 
@@ -124,14 +118,11 @@ double ComputeTempMol::compute_scalar()
   int nlocal = atom->nlocal;
   tagint m;
 
-  // Calculate the thermal velocity (total minus streaming) of all molecules
-  double ke_singles[6];
-  vcm_compute(ke_singles);
-
+  molprop->vcm_compute();
   // Tally up the molecule COM velocities to get the kinetic temperature
   double t = ke_singles[0]+ke_singles[1]+ke_singles[2];
   for (m = 0; m < molmax; m++) {
-    t += (vcmall[m][0]*vcmall[m][0] + vcmall[m][1]*vcmall[m][1] + vcmall[m][2]*vcmall[m][2]) *
+    t += (vcm[m][0]*vcm[m][0] + vcm[m][1]*vcm[m][1] + vcm[m][2]*vcm[m][2]) *
           molmass[m];
   }
 
@@ -154,6 +145,8 @@ void ComputeTempMol::compute_vector()
 
   tagint molmax = molprop->molmax;
   double *molmass = molprop->mass;
+  double **vcm = molprop->vcm;
+  double *ke_singles = molprop->ke_singles;
 
   double **v = atom->v;
   double *mass = atom->mass;
@@ -166,18 +159,16 @@ void ComputeTempMol::compute_vector()
   double massone,t[6];
   for (i = 0; i < 6; i++) t[i] = 0.0;
 
-  double ke_singles[6];
-  vcm_compute(ke_singles);
-
+  molprop->vcm_compute();
   // Tally up the molecule COM velocities to get the kinetic temperature
   // No need for MPI reductions, since every processor knows the molecule VCMs
   for (m = 0; m < molmax; m++) {
-      t[0] += molmass[m] * vcmall[m][0] * vcmall[m][0];
-      t[1] += molmass[m] * vcmall[m][1] * vcmall[m][1];
-      t[2] += molmass[m] * vcmall[m][2] * vcmall[m][2];
-      t[3] += molmass[m] * vcmall[m][0] * vcmall[m][1];
-      t[4] += molmass[m] * vcmall[m][0] * vcmall[m][2];
-      t[5] += molmass[m] * vcmall[m][1] * vcmall[m][2];
+      t[0] += molmass[m] * vcm[m][0] * vcm[m][0];
+      t[1] += molmass[m] * vcm[m][1] * vcm[m][1];
+      t[2] += molmass[m] * vcm[m][2] * vcm[m][2];
+      t[3] += molmass[m] * vcm[m][0] * vcm[m][1];
+      t[4] += molmass[m] * vcm[m][0] * vcm[m][2];
+      t[5] += molmass[m] * vcm[m][1] * vcm[m][2];
   }
   // final KE. Include contribution from single atoms if there are any
   for (i = 0; i < 6; i++) vector[i] = (t[i]+ke_singles[i])*force->mvv2e;
@@ -225,87 +216,6 @@ void ComputeTempMol::dof_compute()
     tfactor = force->mvv2e / (dof * force->boltz);
   else
     tfactor = 0.0;
-}
-
-/* ----------------------------------------------------------------------
-   Calculate centre-of-mass velocity for each molecule.
-   Can be safely called mid-step since doesn't set invoked flag.
-  --------------------------------------------------------------------*/
-
-void ComputeTempMol::vcm_compute(double *ke_singles)
-{
-  tagint m;
-  double massone;
-  double unwrap[3];
-
-  // molid = 1 to molmax for included atoms, 0 for excluded atoms
-  tagint *molecule = atom->molecule;
-  tagint molmax = molprop->molmax;
-
-  // Update molecular masses if required
-  // Also grows vcm and vcmall if needed
-  if ( (molprop->dynamic_group || molprop->dynamic_mols)
-      && molprop->mass_step != update->ntimestep)
-    molprop->mass_compute();
-  double *molmass = molprop->mass;
-
-  // Reallocation handled by fix property/molecule.
-  // Make sure size is up to date
-  size_array_rows = molmax;
-
-  // zero local per-molecule values
-  for (m = 0; m < molmax; m++){
-    vcm[m][0] = vcm[m][1] = vcm[m][2] = 0.0;
-  }
-
-  // compute VCM for each molecule
-
-  double **x = atom->x;
-  double **v = atom->v;
-  int *mask = atom->mask;
-  int *type = atom->type;
-
-  double *mass = atom->mass;
-  double *rmass = atom->rmass;
-  int nlocal = atom->nlocal;
-
-  double ke_local[6];
-  for (int i = 0; i < 6; ++i)
-    ke_local[i] = 0.0;
-
-  for (int i = 0; i < nlocal; i++)
-    if (mask[i] & groupbit) {
-      if (rmass) massone = rmass[i];
-      else massone = mass[type[i]];
-      m = molecule[i]-1;
-      if (m < 0) {
-        if (ke_singles != nullptr) {
-          ke_local[0] += v[i][0]*v[i][0]*massone;
-          ke_local[1] += v[i][1]*v[i][1]*massone;
-          ke_local[2] += v[i][2]*v[i][2]*massone;
-          ke_local[3] += v[i][0]*v[i][1]*massone;
-          ke_local[4] += v[i][0]*v[i][2]*massone;
-          ke_local[5] += v[i][1]*v[i][2]*massone;
-        }
-        continue;
-      }
-      vcm[m][0] += v[i][0] * massone;
-      vcm[m][1] += v[i][1] * massone;
-      vcm[m][2] += v[i][2] * massone;
-    }
-
-  double ke_total = 0;
-  if (molmax > 0) MPI_Allreduce(&vcm[0][0],&vcmall[0][0],3*molmax,MPI_DOUBLE,MPI_SUM,world);
-  if (ke_singles != nullptr) MPI_Allreduce(ke_local,ke_singles,6,MPI_DOUBLE,MPI_SUM,world);
-  for (m = 0; m < molmax; m++) {
-    if (molmass[m] > 0.0) {
-      vcmall[m][0] /= molmass[m];
-      vcmall[m][1] /= molmass[m];
-      vcmall[m][2] /= molmass[m];
-    } else {
-      vcmall[m][0] = vcmall[m][1] = vcmall[m][2] = 0.0;
-    }
-  }
 }
 
 /* ----------------------------------------------------------------------

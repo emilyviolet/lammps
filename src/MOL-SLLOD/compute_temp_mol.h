@@ -37,7 +37,6 @@ class ComputeTempMol : public Compute {
 
   // TODO(SS): centralise vcm_compute() to fix property/mol?
   void vcm_compute(double *ke_singles = nullptr);
-  double **vcmall;
 
  protected:
   char *id_molprop;
@@ -46,8 +45,6 @@ class ComputeTempMol : public Compute {
  private:
   int nmax;
   double adof, cdof, tfactor;
-
-  double **vcm;
 
   void dof_compute();
   void allocate();

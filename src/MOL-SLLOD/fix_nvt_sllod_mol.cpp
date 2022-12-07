@@ -180,8 +180,9 @@ void FixNVTSllodMol::init() {
   molprop = dynamic_cast<FixPropertyMol*>(modify->get_fix_by_id(id_molprop));
   if (molprop == nullptr)
     error->all(FLERR, "Fix nvt/sllod/mol could not find a fix property/mol with id {}", id_molprop);
-  // Make sure CoM can be computed
+  // Make sure CoM and VCM can be computed
   molprop->request_com();
+  molprop->request_vcm();
 
   // Check for exact group match since it's relied on for counting DoF by the temp compute
   if (igroup != molprop->igroup)
@@ -208,11 +209,8 @@ void FixNVTSllodMol::nh_v_temp() {
   }
 
   // Use molecular centre-of-mass velocity when calculating thermostat force
-  // No need to pass ke_singles pointer since we only care about vcmall
-  auto temp_mol = dynamic_cast<ComputeTempMol*>(temperature);
-  temp_mol->vcm_compute();
-  double **vcmall = temp_mol->vcmall;
-
+  double **vcm = molprop->vcm;
+  molprop->vcm_compute();
   tagint *molecule = atom->molecule;
   int m;
 
@@ -237,7 +235,7 @@ void FixNVTSllodMol::nh_v_temp() {
     if (mask[i] & groupbit) {
       m = molecule[i]-1;
       if (m < 0) vcom = v[i];  // CoM velocity of single atom is just v[i]
-      else vcom = vcmall[m];
+      else vcom = vcm[m];
 
       // First half step SLLOD force on CoM.
       // Don't overwrite vcom since we may need it for multiple atoms.

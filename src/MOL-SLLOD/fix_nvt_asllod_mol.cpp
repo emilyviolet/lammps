@@ -43,7 +43,7 @@ enum{NONE=0,FINAL,DELTA,SCALE,VEL,ERATE,TRATE,VOLUME,WIGGLE,VARIABLE};
 /* ---------------------------------------------------------------------- */
 
 FixNVTAsllodMol::FixNVTAsllodMol(LAMMPS *lmp, int narg, char **arg) :
-  FixNH(lmp, narg, arg), id_molprop(nullptr)
+  FixNH(lmp, narg, arg), id_molprop(nullptr), molprop(nullptr)
 {
   molpropflag = 1;
 
@@ -123,6 +123,19 @@ FixNVTAsllodMol::~FixNVTAsllodMol() {
 
 void FixNVTAsllodMol::init() {
   FixNH::init();
+
+  // Get id of molprop
+  molprop = dynamic_cast<FixPropertyMol*>(modify->get_fix_by_id(id_molprop));
+  if (molprop == nullptr)
+    error->all(FLERR, "Compute temp/mol could not find a fix property/mol with id {}", id_molprop);
+  // if (!molprop->mass_flag)
+  //   error->all(FLERR, "Compute temp/mol requires fix property/mol with the mass or com flag");
+  if (igroup != molprop->igroup)
+    error->all(FLERR, "Fix property/mol must be defined for the same group as compute temp/mol");
+  // Register to get the VCM
+  // TODO EVK: No need to pass ke_singles pointer since we only care about vcm
+  // Need to find a way to avoid clashing with other styles that *do* need it
+  molprop->request_vcm();
 
   // Check that temperature calculates a molecular temperature
   // TODO(SS): add moltemp flag to compute.h that we can check?
@@ -233,16 +246,14 @@ void FixNVTAsllodMol::nh_v_temp() {
   }
 
   // Get mid-step CoM velocity
-  // No need to pass ke_singles pointer since we only care about vcmall
-  temp_mol->vcm_compute();
-  double **vcmall = temp_mol->vcmall;
+  double **vcm = molprop->vcm;
   double *vcom;
 
   for (int i = 0; i < nlocal; i++) {
     if (mask[i] & groupbit) {
       m = molecule[i]-1;
       if (m < 0) vcom = v[i];  // CoM velocity of single atom is just v[i]
-      else vcom = vcmall[m];
+      else vcom = vcm[m];
 
       // Thermostat force on CoM velocity
       v[i][0] = v[i][0] - vcom[0] + vcom[0] * factor_eta;

@@ -35,6 +35,7 @@ class FixNVTAsllodMol : public FixNH {
  protected:
   int molpropflag;    // 1 = molprop created by nvt/sllod/mol, 0 = user supplied
   char *id_molprop;   // Name of property/molecule fix
+  class FixPropertyMol *molprop;
 
  private:
   void nh_v_temp() override;
