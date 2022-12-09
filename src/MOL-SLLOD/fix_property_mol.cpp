@@ -39,6 +39,17 @@ FixPropertyMol::FixPropertyMol(LAMMPS *lmp, int narg, char **arg) :
   mass_flag = 0;
   com_flag = 0;
   vcm_flag = 0;
+  mass = nullptr;
+  massproc = nullptr;
+  com = nullptr;
+  comproc = nullptr;
+  vcm = nullptr;
+  vcmproc = nullptr;
+
+  // Need to put this here since register_mass() and friends use this to allocate memory
+  nmax = 0;
+  molmax = 1;
+  nmolecule = 0;
 
   dynamic_group_allow = 1;
   dynamic_group = group->dynamic[igroup];
@@ -46,6 +57,7 @@ FixPropertyMol::FixPropertyMol(LAMMPS *lmp, int narg, char **arg) :
 
   while (iarg < narg) {
     if (strcmp(arg[iarg], "mass") == 0) {
+      // TODO EVK: are we allowed to call memory allocation functions in the constructor?
       request_mass();
       iarg++;
     } else if (strcmp(arg[iarg], "com") == 0) {
@@ -59,10 +71,6 @@ FixPropertyMol::FixPropertyMol(LAMMPS *lmp, int narg, char **arg) :
       iarg++;
     } else error->all(FLERR, "Illegal fix property/mol command");
   }
-
-  nmax = 0;
-  molmax = 1;
-  nmolecule = 0;
 
   com_step = -1;
   mass_step = -1;
@@ -78,6 +86,7 @@ FixPropertyMol::FixPropertyMol(LAMMPS *lmp, int narg, char **arg) :
 
 FixPropertyMol::~FixPropertyMol()
 {
+  if (copymode) return;
   if (com_flag)
   {
     memory->destroy(com);
@@ -87,6 +96,8 @@ FixPropertyMol::~FixPropertyMol()
   {
     memory->destroy(vcm);
     memory->destroy(vcmproc);
+    memory->destroy(ke_singles);
+    memory->destroy(keproc);
   }
   if (mass_flag)
   {
@@ -120,6 +131,8 @@ void FixPropertyMol::request_vcm() {
   request_mass();
   memory->create(vcm, nmax, 3, "property/mol:vcm");
   memory->create(vcmproc, nmax, 3, "property/mol:vcmproc");
+  memory->create(ke_singles, 6, "property/mol:ke_singles");
+  memory->create(keproc, 6, "property/mol:ke_singles");
 }
 
 void FixPropertyMol::request_mass() {
@@ -348,11 +361,11 @@ void FixPropertyMol::vcm_compute()
     for (tagint m = 0; m < molmax; ++m)
       massproc[m] = 0.0;
   }
-  double ke_local[6];
+
   if (ke_singles_flag)
   {
     for (int i = 0; i < 6; ++i)
-      ke_local[i] = 0.0;
+      keproc[i] = 0.0;
   }
 
   for (int i = 0; i < nlocal; ++i) {
@@ -362,12 +375,12 @@ void FixPropertyMol::vcm_compute()
       tagint m = molecule[i]-1;
       if (m < 0) {
         if (ke_singles_flag) {
-          ke_local[0] += v[i][0]*v[i][0]*massone;
-          ke_local[1] += v[i][1]*v[i][1]*massone;
-          ke_local[2] += v[i][2]*v[i][2]*massone;
-          ke_local[3] += v[i][0]*v[i][1]*massone;
-          ke_local[4] += v[i][0]*v[i][2]*massone;
-          ke_local[5] += v[i][1]*v[i][2]*massone;
+          keproc[0] += v[i][0]*v[i][0]*massone;
+          keproc[1] += v[i][1]*v[i][1]*massone;
+          keproc[2] += v[i][2]*v[i][2]*massone;
+          keproc[3] += v[i][0]*v[i][1]*massone;
+          keproc[4] += v[i][0]*v[i][2]*massone;
+          keproc[5] += v[i][1]*v[i][2]*massone;
         }
         continue;
       }
@@ -379,7 +392,7 @@ void FixPropertyMol::vcm_compute()
   }
 
   MPI_Allreduce(&vcmproc[0][0],&vcm[0][0],3*molmax,MPI_DOUBLE,MPI_SUM,world);
-  if(ke_singles_flag) MPI_Allreduce(ke_local,ke_singles,6,MPI_DOUBLE, MPI_SUM, world);
+  if(ke_singles_flag) MPI_Allreduce(keproc,ke_singles,6,MPI_DOUBLE, MPI_SUM, world);
   if (recalc_mass) MPI_Allreduce(massproc,mass,molmax,MPI_DOUBLE,MPI_SUM,world);
 
   for (int m = 0; m < molmax; ++m) {

@@ -41,7 +41,7 @@ class FixPropertyMol : public Fix {
   bool grow_permolecule(int=0);
 
   double *mass;           // per molecule mass
-  double ke_singles[6];   // Vector components of kinetic energy
+  double *ke_singles;     // Vector components of kinetic energy
   double **com;           // per molecule center of mass in unwrapped coords
   double **vcm;           // per molecule center of mass velocity
   bigint mass_step;       // last step where mass was updated
@@ -67,7 +67,7 @@ class FixPropertyMol : public Fix {
  protected:
   tagint nmax;            // length of permolecule arrays the last time they grew
 
-  double *massproc, **comproc, **vcmproc;
+  double *massproc, **comproc, **vcmproc, *keproc;
   int mass_flag, com_flag, vcm_flag, ke_singles_flag;    // 1 if mass/com can be computed
 
 };
