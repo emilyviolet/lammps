@@ -23,22 +23,25 @@ FixStyle(property/mol/kk/host,FixPropertyMolKokkos<LMPHostType>);
 #define LMP_FIX_PROPERTY_MOL_KOKKOS_H
 
 #include "fix_property_mol.h"
+#include"kokkos_base.h"
 #include "kokkos_type.h"
 #include "kokkos_few.h"
 
 namespace LAMMPS_NS {
+template<int NEIGHFLAG, int RMASS>
+struct TagFixPropertyMol_mass_compute{};
+
 struct TagFixPropertyMol_count{};
 
 struct TagFixPropertyMol_massproc_zero{};
 struct TagFixPropertyMol_comproc_zero{};
 struct TagFixPropertyMol_vcmproc_zero{};
 
-struct TagFixPropertyMol_mass_compute{};
-
-//template<int RMASS>
+template<int NEIGHFLAG, int RMASS>
 struct TagFixPropertyMol_com_compute{};
 struct TagFixPropertyMol_com_scale{};
 
+template<int NEIGHFLAG, int RMASS>
 struct TagFixPropertyMol_vcm_compute{};
 struct TagFixPropertyMol_vcm_scale{};
 
@@ -83,6 +86,19 @@ class FixPropertyMolKokkos : public FixPropertyMol {
   void request_vcm();     // Request that VCM be allocated (implies mass)
   void request_mass();    // Request that mass be allocated
 
+
+  template<int NEIGHFLAG, int RMASS>
+  KOKKOS_INLINE_FUNCTION
+  void operator()(TagFixPropertyMol_mass_compute<NEIGHFLAG, RMASS>, const int&) const;
+
+  template<int NEIGHFLAG, int RMASS>
+  KOKKOS_INLINE_FUNCTION
+  void operator()(TagFixPropertyMol_com_compute<NEIGHFLAG, RMASS>, const int&) const;
+
+  template<int NEIGHFLAG, int RMASS>
+  KOKKOS_INLINE_FUNCTION
+  void operator()(TagFixPropertyMol_vcm_compute<NEIGHFLAG, RMASS>, const int&) const;
+
   KOKKOS_INLINE_FUNCTION
   void operator()(TagFixPropertyMol_count, const int&, tagint&) const;
   KOKKOS_INLINE_FUNCTION
@@ -91,17 +107,10 @@ class FixPropertyMolKokkos : public FixPropertyMol {
   void operator()(TagFixPropertyMol_comproc_zero, const int&) const;
   KOKKOS_INLINE_FUNCTION
   void operator()(TagFixPropertyMol_vcmproc_zero, const int&) const;
-
-  KOKKOS_INLINE_FUNCTION
-  void operator()(TagFixPropertyMol_mass_compute, const int&) const;
   
-  KOKKOS_INLINE_FUNCTION
-  void operator()(TagFixPropertyMol_com_compute, const int&) const;
   KOKKOS_INLINE_FUNCTION
   void operator()(TagFixPropertyMol_com_scale, const int&) const;
 
-  KOKKOS_INLINE_FUNCTION
-  void operator()(TagFixPropertyMol_vcm_compute, const int&) const;
   KOKKOS_INLINE_FUNCTION
   void operator()(TagFixPropertyMol_vcm_scale, const int&) const;
 
@@ -134,11 +143,26 @@ class FixPropertyMolKokkos : public FixPropertyMol {
   Few<double, 3> prd;
   int triclinic;
 
+  using KKDeviceType = typename KKDevice<DeviceType>::value;
+
+  template<typename DataType, typename Layout>
+  using DupScatterView = KKScatterView<DataType, Layout, KKDeviceType, KKScatterSum, KKScatterDuplicated>;
+
+  template<typename DataType, typename Layout>
+  using NonDupScatterView = KKScatterView<DataType, Layout, KKDeviceType, KKScatterSum, KKScatterNonDuplicated>;
+
   // Scatter views to use when calculating the per-molecule arrays across multiple threads
-  Kokkos::Experimental::ScatterView<double*, typename AT::t_float_1d::array_layout> dup_massproc;
-  Kokkos::Experimental::ScatterView<X_FLOAT*[3], typename AT::t_x_array::array_layout> dup_comproc;
-  Kokkos::Experimental::ScatterView<X_FLOAT*[3], typename AT::t_v_array::array_layout> dup_vcmproc;
-  Kokkos::Experimental::ScatterView<double*, typename AT::t_float_1d::array_layout> dup_keproc;
+  DupScatterView<double*, typename AT::t_float_1d::array_layout> dup_massproc;
+  DupScatterView<X_FLOAT*[3], typename AT::t_x_array::array_layout> dup_comproc;
+  DupScatterView<X_FLOAT*[3], typename AT::t_v_array::array_layout> dup_vcmproc;
+  DupScatterView<double*, typename AT::t_float_1d::array_layout> dup_keproc;
+
+  NonDupScatterView<double*, typename AT::t_float_1d::array_layout> ndup_massproc;
+  NonDupScatterView<X_FLOAT*[3], typename AT::t_x_array::array_layout> ndup_comproc;
+  NonDupScatterView<X_FLOAT*[3], typename AT::t_v_array::array_layout> ndup_vcmproc;
+  NonDupScatterView<double*, typename AT::t_float_1d::array_layout> ndup_keproc;
+
+  int neighflag, need_dup;
 
 };
 
