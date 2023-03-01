@@ -69,7 +69,7 @@ class FixPropertyMolKokkos : public FixPropertyMol {
   typename DAT::tdual_x_array k_com;           // per molecule center of mass view in unwrapped coords
   typename DAT::tdual_v_array k_vcm;           // per molecule center of mass velocity
   typename DAT::tdual_float_1d k_ke_singles;    // kinetic energy tensor
-  double *ke_singles;    // kinetic energy tensor (host)
+  //double *ke_singles;    // kinetic energy tensor (host)
 
   // Device views
   typename AT::t_float_1d d_mass;           // per molecule mass view
@@ -117,7 +117,7 @@ class FixPropertyMolKokkos : public FixPropertyMol {
 
  protected:
 
-  double *keproc;
+  //double *keproc;
   typename DAT::tdual_float_1d k_massproc;
   typename DAT::tdual_x_array k_comproc;
   typename DAT::tdual_v_array k_vcmproc;
