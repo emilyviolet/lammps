@@ -202,13 +202,14 @@ void FixPropertyMolKokkos<DeviceType>::count_molecules() {
   k_mass.template sync<DeviceType>();
   d_mass = k_mass.view<DeviceType>();
 
-  copymode = 1;
-  // This is simple enough that it probably doesn't need a full-on functor
-  Kokkos::parallel_reduce("property/mol:reduction", Kokkos::RangePolicy<DeviceType>(0, molmax), KOKKOS_LAMBDA (const int m, int &rcount) {
-    if (d_mass[m] > 0.0)
-      rcount += 1;
-  }, nmolecule);
-  copymode = 0;
+  {
+    // Local copy of mass for LAMBDA capture
+    auto l_mass = this->d_mass;
+    Kokkos::parallel_reduce(Kokkos::RangePolicy<DeviceType>(0,molmax), LAMMPS_LAMBDA (const int m, int &rcount) {
+      if (l_mass[m] > 0.0)
+        rcount += 1;
+    }, nmolecule);
+  }
 }
 
 
