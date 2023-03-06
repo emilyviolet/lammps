@@ -38,6 +38,25 @@ FixPropertyMolKokkos<DeviceType>::FixPropertyMolKokkos(LAMMPS *lmp, int narg, ch
     FixPropertyMol(lmp, narg, arg)
 {
   kokkosable = 1;
+  // Now check if any of the mass, COM or VCM flags have been requested by the base class's constructor
+  // and call the relevant memory allocation functions. Set to zero first so the Kokkos registration
+  // functions actually do stuff
+  if(mass_flag)
+  {
+    mass_flag = 0;
+    request_mass();
+  }
+  if(com_flag)
+  {
+    com_flag = 0;
+    request_com();
+  }
+  if(vcm_flag)
+  {
+    vcm_flag = 0;
+    request_vcm();
+  }
+  
 }
 
 /* ---------------------------------------------------------------------- */

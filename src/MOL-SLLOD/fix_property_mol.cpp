@@ -57,11 +57,15 @@ FixPropertyMol::FixPropertyMol(LAMMPS *lmp, int narg, char **arg) :
 
   while (iarg < narg) {
     if (strcmp(arg[iarg], "mass") == 0) {
-      // TODO EVK: are we allowed to call memory allocation functions in the constructor?
+      // TODO EVK: Need to move these out of the constructor so they don't get called by the Kokkos
+      // version
       request_mass();
       iarg++;
     } else if (strcmp(arg[iarg], "com") == 0) {
       request_com();
+      iarg++;
+    } else if (strcmp(arg[iarg], "vcm") == 0) {
+      request_vcm();
       iarg++;
     } else if (strcmp(arg[iarg], "dynamic") == 0) {
       if (++iarg >= narg)
