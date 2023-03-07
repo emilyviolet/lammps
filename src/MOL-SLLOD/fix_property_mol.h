@@ -38,7 +38,7 @@ class FixPropertyMol : public Fix {
 
   // Calculate nmolecule and grow permolecule vectors/arrays as needed.
   // Return true if max. mol id changed.
-  bool grow_permolecule(int=0);
+  virtual bool grow_permolecule(int=0);
 
   double *mass;           // per molecule mass
   double *ke_singles;     // Vector components of kinetic energy
@@ -55,14 +55,14 @@ class FixPropertyMol : public Fix {
 
   bigint count_step;      // Last step where count_molecules was called
   tagint nmolecule;       // Number of molecules in the group
-  void count_molecules();
-  void mass_compute();
-  void com_compute();
-  void vcm_compute();
+  virtual void count_molecules();
+  virtual void mass_compute();
+  virtual void com_compute();
+  virtual void vcm_compute();
 
-  void request_com();       // Request that CoM be allocated (implies mass)
-  void request_vcm();    // Request that VCM be allocated (implies mass). Optional flag to calculate KE components
-  void request_mass();      // Request that mass be allocated
+  virtual void request_com();       // Request that CoM be allocated (implies mass)
+  virtual void request_vcm();    // Request that VCM be allocated (implies mass). Optional flag to calculate KE components
+  virtual void request_mass();      // Request that mass be allocated
 
  protected:
   tagint nmax;            // length of permolecule arrays the last time they grew

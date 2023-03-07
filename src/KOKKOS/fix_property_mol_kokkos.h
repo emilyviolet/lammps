@@ -23,7 +23,7 @@ FixStyle(property/mol/kk/host,FixPropertyMolKokkos<LMPHostType>);
 #define LMP_FIX_PROPERTY_MOL_KOKKOS_H
 
 #include "fix_property_mol.h"
-#include"kokkos_base.h"
+#include "kokkos_base.h"
 #include "kokkos_type.h"
 #include "kokkos_few.h"
 
@@ -62,7 +62,7 @@ class FixPropertyMolKokkos : public FixPropertyMol {
 
   // Calculate nmolecule and grow permolecule vectors/arrays as needed.
   // Return true if max. mol id changed.
-  bool grow_permolecule(int=0);
+  bool grow_permolecule(int=0) override;
 
   // Dual views
   typename DAT::tdual_float_1d k_mass;           // per molecule mass view
@@ -77,14 +77,14 @@ class FixPropertyMolKokkos : public FixPropertyMol {
   typename AT::t_v_array d_vcm;           // per molecule center of mass velocity
   typename AT::t_float_1d d_ke_singles;    // kinetic energy tensor
 
-  void count_molecules();
-  void mass_compute();
-  void com_compute();
-  void vcm_compute();
+  void count_molecules() override;
+  void mass_compute() override;
+  void com_compute() override;
+  void vcm_compute() override;
 
-  void request_com();     // Request that CoM be allocated (implies mass)
-  void request_vcm();     // Request that VCM be allocated (implies mass)
-  void request_mass();    // Request that mass be allocated
+  void request_com() override;     // Request that CoM be allocated (implies mass)
+  void request_vcm() override;     // Request that VCM be allocated (implies mass)
+  void request_mass() override;    // Request that mass be allocated
 
 
   template<int NEIGHFLAG, int RMASS>
