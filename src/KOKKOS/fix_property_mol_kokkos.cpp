@@ -13,12 +13,14 @@
 
 #include "fix_property_mol_kokkos.h"
 
+#include "Kokkos_Core_fwd.hpp"
 #include "atom.h"
 #include "atom_kokkos.h"
 #include "domain.h"
 #include "domain_kokkos.h"
 #include "error.h"
 #include "group.h"
+#include "kokkos_type.h"
 #include "memory.h"
 #include "memory_kokkos.h"
 #include "update.h"
@@ -203,7 +205,7 @@ bool FixPropertyMolKokkos<DeviceType>::grow_permolecule(int grow_by) {
       memoryKK->grow_kokkos(k_vcmproc, vcmproc, nmax, "property/mol:vcmproc");
     }
   }
-
+  
   size_array_rows = static_cast<int>(molmax);
   return old_molmax != molmax;
 }
@@ -216,10 +218,15 @@ bool FixPropertyMolKokkos<DeviceType>::grow_permolecule(int grow_by) {
 ------------------------------------------------------------------------- */
 template<class DeviceType>
 void FixPropertyMolKokkos<DeviceType>::count_molecules() {
+
   count_step = update->ntimestep;
   nmolecule = 0;
-  k_mass.template sync<DeviceType>();
+  k_mass.sync<DeviceType>();
   d_mass = k_mass.view<DeviceType>();
+
+  for(int m = 0; m < molmax; m++) {
+    //printf("Host: m = %d, mass = %lg\n", m, k_mass.h_view[m]);
+  }
 
   {
     // Local copy of mass for LAMBDA capture
@@ -227,6 +234,7 @@ void FixPropertyMolKokkos<DeviceType>::count_molecules() {
     Kokkos::parallel_reduce(Kokkos::RangePolicy<DeviceType>(0,molmax), LAMMPS_LAMBDA (const int m, int &rcount) {
       if (l_mass[m] > 0.0)
         rcount += 1;
+      //printf("Kernel: m = %d, mass = %lg\n", m, l_mass[m]);
     }, nmolecule);
   }
 }
@@ -239,22 +247,26 @@ void FixPropertyMolKokkos<DeviceType>::count_molecules() {
 template<class DeviceType>
 void FixPropertyMolKokkos<DeviceType>::mass_compute() {
   
-  // Kokkos stuff
   atomKK->sync(execution_space,datamask_read);
 
-  atomKK->k_mass.sync<DeviceType>();
-  atom_mask = atomKK->k_mask.view<DeviceType>();
   atom_type = atomKK->k_type.view<DeviceType>();
+  atom_mask = atomKK->k_mask.view<DeviceType>();
   atom_molID = atomKK->k_molecule.view<DeviceType>();
-
   // Only instantiate the necessary mass view
   if (atomKK->rmass) {
+    atomKK->k_rmass.sync<DeviceType>();
     atom_rmass = atomKK->k_rmass.view<DeviceType>();
   } else {
+    atomKK->k_mass.sync<DeviceType>();
     atom_mass = atomKK->k_mass.view<DeviceType>();
   }
 
-  d_mass = k_mass.view<DeviceType>();
+  // The device-side of k_mass gets marked as modified by memoryKK->grow_kokkos, so Kokkos will complain
+  // if we mark the host-side as modified after the MPI call (technically shouldn't mark both sides as
+  // modified at the same time). We're going to be over-writing the existing values during this
+  // function, though, so it should be safe to just tell Kokkos to ignore the current sync status
+  k_mass.clear_sync_state();
+
   d_massproc = k_massproc.view<DeviceType>();
 
   tagint nlocal = atomKK->nlocal;
@@ -265,77 +277,33 @@ void FixPropertyMolKokkos<DeviceType>::mass_compute() {
   if (molmax == 0) return;
 
   // Zero arrays
-  copymode = 1;
-  Kokkos::parallel_for(Kokkos::RangePolicy<DeviceType, TagFixPropertyMol_massproc_zero>(0, molmax), *this);
-  copymode = 0;
+  Kokkos::deep_copy(d_massproc, 0.0);
 
-  // Now set up the scatter view to track massproc so we can reduce into the elements without races
-  // TODO EVK: I don't think we need the full helper functions and scaffolding, since our synchronisations
-  // don't depend on the type of neighbour list. The LAMMPS scatter view helpers are designed to work with
-  // force or force-style views, where we need to worry about simultaneous accesses for half neighbour lists
-  // but this isn't a problem here. Could be cleaner to just let Kokkos decide whether to duplicate.
-  // Could we just check whether LMP_USE_ATOMICS is set?
-  neighflag = lmp->kokkos->neighflag;
-  // Don't think we need anything on top of the standard stuff for determining whether to duplicate
-  if(neighflag == HALF)
-    need_dup = std::is_same<typename NeedDup<HALF,DeviceType>::value,Kokkos::Experimental::ScatterDuplicated>::value;
-  else if (neighflag == HALFTHREAD)
-    need_dup = std::is_same<typename NeedDup<HALFTHREAD,DeviceType>::value,Kokkos::Experimental::ScatterDuplicated>::value;
-  else
-    need_dup = std::is_same<typename NeedDup<FULL,DeviceType>::value,Kokkos::Experimental::ScatterDuplicated>::value;
-
-  if(need_dup) {
-    dup_massproc = Kokkos::Experimental::create_scatter_view<Kokkos::Experimental::ScatterSum, Kokkos::Experimental::ScatterDuplicated>(d_massproc);
-  } else {
-    ndup_massproc = Kokkos::Experimental::create_scatter_view<Kokkos::Experimental::ScatterSum, Kokkos::Experimental::ScatterNonDuplicated>(d_massproc);
-  }
-  // Template based on whether to use rmass
+  // Now set up the scatter view to track massproc so we can reduce into the elements without data races
+  scatter_massproc = Kokkos::Experimental::create_scatter_view<Kokkos::Experimental::ScatterSum>(d_massproc);
   copymode = 1;
   if (atomKK->rmass) {
-    if (neighflag == HALF) {
-      Kokkos::parallel_for(Kokkos::RangePolicy<DeviceType, TagFixPropertyMol_mass_compute<HALF, 1> >(0, nlocal), *this);
-    } else if (neighflag == HALFTHREAD) {
-      Kokkos::parallel_for(Kokkos::RangePolicy<DeviceType, TagFixPropertyMol_mass_compute<HALFTHREAD, 1> >(0, nlocal), *this);
-    } else if (neighflag == FULL) {
-      Kokkos::parallel_for(Kokkos::RangePolicy<DeviceType, TagFixPropertyMol_mass_compute<FULL, 1> >(0, nlocal), *this);
-    }
+    Kokkos::parallel_for(Kokkos::RangePolicy<DeviceType, TagFixPropertyMol_mass_compute<1> >(0, nlocal), *this);
   } else {
-    if (neighflag == HALF) {
-      Kokkos::parallel_for(Kokkos::RangePolicy<DeviceType, TagFixPropertyMol_mass_compute<HALF, 0> >(0, nlocal), *this);
-    } else if (neighflag == HALFTHREAD) {
-      Kokkos::parallel_for(Kokkos::RangePolicy<DeviceType, TagFixPropertyMol_mass_compute<HALFTHREAD, 0> >(0, nlocal), *this);
-    } else if (neighflag == FULL) {
-      Kokkos::parallel_for(Kokkos::RangePolicy<DeviceType, TagFixPropertyMol_mass_compute<FULL, 0> >(0, nlocal), *this);
-    }
+    Kokkos::parallel_for(Kokkos::RangePolicy<DeviceType, TagFixPropertyMol_mass_compute<0> >(0, nlocal), *this);
   }
   copymode = 0;
-  
-  // Collect results from the scatter view
-  if(need_dup) {
-    Kokkos::Experimental::contribute(d_massproc, dup_massproc);
-  } else {
-    Kokkos::Experimental::contribute(d_massproc, ndup_massproc);
-  }
+  Kokkos::Experimental::contribute(d_massproc, scatter_massproc);
 
-  k_massproc.sync<DeviceType>();
+  // TODO EVK: Should really have a code-path to keep this all on the device if LAMMPS is compiled with GPU-aware MPI
+  k_massproc.template modify<DeviceType>();
+  k_massproc.template sync<LMPHostType>();
   MPI_Allreduce(k_massproc.h_view.data(), k_mass.h_view.data(), molmax, MPI_DOUBLE, MPI_SUM, world);
+  k_mass.modify<LMPHostType>();
   k_mass.sync<DeviceType>();
 }
 
 template<class DeviceType>
+template<int RMASS>
 KOKKOS_INLINE_FUNCTION
-void FixPropertyMolKokkos<DeviceType>::operator()(TagFixPropertyMol_massproc_zero, const int& m) const
+void FixPropertyMolKokkos<DeviceType>::operator()(TagFixPropertyMol_mass_compute<RMASS>, const int&i) const
 {
-  d_massproc[m] = 0.0;
-}
-
-template<class DeviceType>
-template<int NEIGHFLAG, int RMASS>
-KOKKOS_INLINE_FUNCTION
-void FixPropertyMolKokkos<DeviceType>::operator()(TagFixPropertyMol_mass_compute<NEIGHFLAG, RMASS>, const int&i) const
-{
-  auto v_massproc = ScatterViewHelper<NeedDup_v<NEIGHFLAG,DeviceType>,decltype(dup_massproc),decltype(ndup_massproc)>::get(dup_massproc,ndup_massproc);
-  auto a_massproc = v_massproc.template access<AtomicDup_v<NEIGHFLAG,DeviceType> >();
+  auto a_massproc = scatter_massproc.template access();
   if (RMASS) {
     if (groupbit & atom_mask[i]) {
       tagint m = atom_molID[i]-1;
@@ -365,102 +333,74 @@ void FixPropertyMolKokkos<DeviceType>::com_compute() {
   bool recalc_mass = dynamic_group;
   if (dynamic_mols) recalc_mass |= grow_permolecule();
   if (molmax == 0) return;
-
-  int nlocal = atomKK->nlocal;
-  // Kokkos variables
-  atom_molID = atomKK->k_molecule.view<DeviceType>();
-  atom_type = atomKK->k_type.view<DeviceType>();
-  if(atomKK->rmass)
-  {
-    atom_rmass = atomKK->k_rmass.view<DeviceType>();
-  } else {
-    atom_mass = atomKK->k_mass.view<DeviceType>();
-  }
-  atom_x = atomKK->k_x.view<DeviceType>();
-  atom_image = atomKK->k_image.view<DeviceType>();
-
-  d_com = k_com.view<DeviceType>();
-  d_comproc = k_comproc.view<DeviceType>();
-
-  // Zero the arrays
-  copymode = 1;
-  Kokkos::parallel_for(Kokkos::RangePolicy<DeviceType, TagFixPropertyMol_comproc_zero>(0, molmax), *this);
-  copymode = 0;
-
   if (recalc_mass) {
     mass_compute();
   }
+
+  int nlocal = atomKK->nlocal;
+  atom_type = atomKK->k_type.view<DeviceType>();
+  atom_mask = atomKK->k_mask.view<DeviceType>();
+  atom_molID = atomKK->k_molecule.view<DeviceType>();
+  atom_x = atomKK->k_x.view<DeviceType>();
+  atom_image = atomKK->k_image.view<DeviceType>();
+  // Only instantiate the necessary mass view
+  if (atomKK->rmass) {
+    atomKK->k_rmass.sync<DeviceType>();
+    atom_rmass = atomKK->k_rmass.view<DeviceType>();
+  } else {
+    atomKK->k_mass.sync<DeviceType>();
+    atom_mass = atomKK->k_mass.view<DeviceType>();
+  }
+
+  // The device-side of k_com and friends gets marked as modified by memoryKK->grow_kokkos, so Kokkos will complain
+  // if we mark the host-side as modified after the MPI call (technically shouldn't mark both sides as
+  // modified at the same time). We're going to be over-writing the existing values during this
+  // function, though, so it should be safe to just tell Kokkos to ignore the current sync status
+  k_com.clear_sync_state();
+
+  d_com = k_com.view<DeviceType>();
+  d_comproc = k_comproc.view<DeviceType>();
+  d_mass = k_mass.view<DeviceType>();
+
+  // Zero the array
+  Kokkos::deep_copy(d_comproc, 0.0);
 
   // Get the box properties from domainKK so we can remap inside the kernel
   prd = Few<double, 3>(domain->prd);
   h = Few<double, 6>(domain->h);
   triclinic = domain->triclinic;
 
-  // Now we need a scatter view to reduce into, may or may not need to be duplicated
-  if(neighflag == HALF)
-    need_dup = std::is_same<typename NeedDup<HALF,DeviceType>::value,Kokkos::Experimental::ScatterDuplicated>::value;
-  else if (neighflag == HALFTHREAD)
-    need_dup = std::is_same<typename NeedDup<HALFTHREAD,DeviceType>::value,Kokkos::Experimental::ScatterDuplicated>::value;
-  else
-    need_dup = std::is_same<typename NeedDup<FULL,DeviceType>::value,Kokkos::Experimental::ScatterDuplicated>::value;
-
-  //dup_comproc = Kokkos::Experimental::create_scatter_view<Kokkos::Experimental::ScatterSum, Kokkos::Experimental::ScatterDuplicated>(d_comproc);
-  if(need_dup)
-  {
-    dup_comproc = Kokkos::Experimental::create_scatter_view<Kokkos::Experimental::ScatterSum, Kokkos::Experimental::ScatterDuplicated>(d_comproc);
-  } else {
-    ndup_comproc = Kokkos::Experimental::create_scatter_view<Kokkos::Experimental::ScatterSum, Kokkos::Experimental::ScatterNonDuplicated>(d_comproc);
-  }
+  // Now we need a scatter view to reduce into. Let Kokkos decide whether to duplicate or not
+  scatter_comproc = Kokkos::Experimental::create_scatter_view<Kokkos::Experimental::ScatterSum>(d_comproc);
   copymode = 1;
   if (atomKK->rmass) {
-    if (neighflag == HALF) {
-      Kokkos::parallel_for(Kokkos::RangePolicy<DeviceType, TagFixPropertyMol_com_compute<HALF, 1> >(0, nlocal), *this);
-    } else if (neighflag == HALFTHREAD) {
-      Kokkos::parallel_for(Kokkos::RangePolicy<DeviceType, TagFixPropertyMol_com_compute<HALFTHREAD, 1> >(0, nlocal), *this);
-    } else if (neighflag == FULL) {
-      Kokkos::parallel_for(Kokkos::RangePolicy<DeviceType, TagFixPropertyMol_com_compute<FULL, 1> >(0, nlocal), *this);
-    }
+    Kokkos::parallel_for(Kokkos::RangePolicy<DeviceType, TagFixPropertyMol_com_compute<1> >(0, nlocal), *this);
   } else {
-    if (neighflag == HALF) {
-      Kokkos::parallel_for(Kokkos::RangePolicy<DeviceType, TagFixPropertyMol_com_compute<HALF, 0> >(0, nlocal), *this);
-    } else if (neighflag == HALFTHREAD) {
-      Kokkos::parallel_for(Kokkos::RangePolicy<DeviceType, TagFixPropertyMol_com_compute<HALFTHREAD, 0> >(0, nlocal), *this);
-    } else if (neighflag == FULL) {
-      Kokkos::parallel_for(Kokkos::RangePolicy<DeviceType, TagFixPropertyMol_com_compute<FULL, 0> >(0, nlocal), *this);
-    }
+    Kokkos::parallel_for(Kokkos::RangePolicy<DeviceType, TagFixPropertyMol_com_compute<0> >(0, nlocal), *this);
   }
+  copymode = 0;
 
-  if(need_dup){
-    Kokkos::Experimental::contribute(d_comproc, dup_comproc);
-  } else {
-    Kokkos::Experimental::contribute(d_comproc, ndup_comproc);
-  }
+  Kokkos::Experimental::contribute(d_comproc, scatter_comproc);
 
-  k_comproc.sync<DeviceType>();
+  k_comproc.template modify<DeviceType>();
+  k_comproc.template sync<LMPHostType>();
   MPI_Allreduce(k_comproc.h_view.data(),k_com.h_view.data(),3*molmax,MPI_DOUBLE,MPI_SUM,world);
+  k_com.modify<LMPHostType>();
   k_com.sync<DeviceType>();
 
   copymode = 1;
   Kokkos::parallel_for(Kokkos::RangePolicy<DeviceType, TagFixPropertyMol_com_scale>(0, molmax), *this);
   copymode = 0;
+  k_com.modify<DeviceType>();
+  k_com.sync<LMPHostType>();
 }
 
 template<class DeviceType>
+template<int RMASS>
 KOKKOS_INLINE_FUNCTION
-void FixPropertyMolKokkos<DeviceType>::operator()(TagFixPropertyMol_comproc_zero, const int& m) const
+void FixPropertyMolKokkos<DeviceType>::operator()(TagFixPropertyMol_com_compute<RMASS>, const int& i) const
 {
-  d_comproc(m, 0) = 0.0;
-  d_comproc(m, 1) = 0.0;
-  d_comproc(m, 2) = 0.0;
-}
-
-template<class DeviceType>
-template<int NEIGHFLAG, int RMASS>
-KOKKOS_INLINE_FUNCTION
-void FixPropertyMolKokkos<DeviceType>::operator()(TagFixPropertyMol_com_compute<NEIGHFLAG, RMASS>, const int& i) const
-{
-  auto v_comproc = ScatterViewHelper<NeedDup_v<NEIGHFLAG,DeviceType>,decltype(dup_comproc),decltype(ndup_comproc)>::get(dup_comproc,ndup_comproc);
-  auto a_comproc = v_comproc.template access<AtomicDup_v<NEIGHFLAG,DeviceType> >();
+  auto a_comproc = scatter_comproc.template access();
   if(groupbit & atom_mask[i])
   {
     // TODO EVK: Refactor, too much copy-paste
@@ -516,117 +456,87 @@ void FixPropertyMolKokkos<DeviceType>::operator()(TagFixPropertyMol_com_scale, c
 template<class DeviceType>
 void FixPropertyMolKokkos<DeviceType>::vcm_compute()
 {
+  atomKK->sync(execution_space,datamask_read);
   vcm_step = update->ntimestep;
   // Recalculate mass if number of molecules (max. mol id) changed, or if
   // group is dynamic
   bool recalc_mass = dynamic_group;
   if (dynamic_mols) recalc_mass |= grow_permolecule();
   if (molmax == 0) return;
+  if (recalc_mass) {
+    mass_compute();
+  }
 
   int nlocal = atomKK->nlocal;
   // Kokkos variables
   atom_molID = atomKK->k_molecule.view<DeviceType>();
   atom_type = atomKK->k_type.view<DeviceType>();
   atom_mask = atomKK->k_mask.view<DeviceType>();
-  if(atomKK->rmass)
-  {
-    atom_rmass = atomKK->k_rmass.view<DeviceType>();
-  } else {
-    atom_mass = atomKK->k_mass.view<DeviceType>();
-  }
-  atom_x = atomKK->k_x.view<DeviceType>();
   atom_v = atomKK->k_v.view<DeviceType>();
   atom_image = atomKK->k_image.view<DeviceType>();
+ 
+  // Only instantiate the necessary mass view
+  if (atomKK->rmass) {
+    atomKK->k_rmass.sync<DeviceType>();
+    atom_rmass = atomKK->k_rmass.view<DeviceType>();
+  } else {
+    atomKK->k_mass.sync<DeviceType>();
+    atom_mass = atomKK->k_mass.view<DeviceType>();
+  }
+
+  // The device-side of k_vcm and friends gets marked as modified by memoryKK->grow_kokkos, so Kokkos will complain
+  // if we mark the host-side as modified after the MPI call (technically shouldn't mark both sides as
+  // modified at the same time). We're going to be over-writing the existing values during this
+  // function, though, so it should be safe to just tell Kokkos to ignore the current sync status
+  k_vcm.clear_sync_state();
+  k_ke_singles.clear_sync_state();
 
   d_vcm = k_vcm.view<DeviceType>();
   d_vcmproc = k_vcmproc.view<DeviceType>();
   d_keproc = k_keproc.view<DeviceType>();
 
   // Zero the arrays
+  Kokkos::deep_copy(d_vcmproc, 0.0);
   Kokkos::deep_copy(d_keproc, 0.0);
-  copymode = 1;
-  Kokkos::parallel_for(Kokkos::RangePolicy<DeviceType, TagFixPropertyMol_vcmproc_zero>(0, molmax), *this);
-  copymode = 0;
-
-  // Recalculate mass if it's changed
-  if (recalc_mass) {
-    mass_compute();
-  }
 
   // Scatter view to reduce into in VCM functor
-  if(neighflag == HALF)
-    need_dup = std::is_same<typename NeedDup<HALF,DeviceType>::value,Kokkos::Experimental::ScatterDuplicated>::value;
-  else if (neighflag == HALFTHREAD)
-    need_dup = std::is_same<typename NeedDup<HALFTHREAD,DeviceType>::value,Kokkos::Experimental::ScatterDuplicated>::value;
-  else
-    need_dup = std::is_same<typename NeedDup<FULL,DeviceType>::value,Kokkos::Experimental::ScatterDuplicated>::value;
-
-  if(need_dup)
-  {
-    dup_vcmproc = Kokkos::Experimental::create_scatter_view<Kokkos::Experimental::ScatterSum, Kokkos::Experimental::ScatterDuplicated>(d_vcmproc);
-    dup_keproc = Kokkos::Experimental::create_scatter_view<Kokkos::Experimental::ScatterSum, Kokkos::Experimental::ScatterDuplicated>(d_keproc);
-  } else {
-    ndup_vcmproc = Kokkos::Experimental::create_scatter_view<Kokkos::Experimental::ScatterSum, Kokkos::Experimental::ScatterNonDuplicated>(d_vcmproc);
-    ndup_keproc = Kokkos::Experimental::create_scatter_view<Kokkos::Experimental::ScatterSum, Kokkos::Experimental::ScatterNonDuplicated>(d_keproc);
-  }
+  scatter_vcmproc = Kokkos::Experimental::create_scatter_view<Kokkos::Experimental::ScatterSum>(d_vcmproc);
+  scatter_keproc = Kokkos::Experimental::create_scatter_view<Kokkos::Experimental::ScatterSum>(d_keproc);
   copymode = 1;
   if (atomKK->rmass) {
-    if (neighflag == HALF) {
-      Kokkos::parallel_for(Kokkos::RangePolicy<DeviceType, TagFixPropertyMol_vcm_compute<HALF, 1> >(0, nlocal), *this);
-    } else if (neighflag == HALFTHREAD) {
-      Kokkos::parallel_for(Kokkos::RangePolicy<DeviceType, TagFixPropertyMol_vcm_compute<HALFTHREAD, 1> >(0, nlocal), *this);
-    } else if (neighflag == FULL) {
-      Kokkos::parallel_for(Kokkos::RangePolicy<DeviceType, TagFixPropertyMol_vcm_compute<FULL, 1> >(0, nlocal), *this);
-    }
+    Kokkos::parallel_for(Kokkos::RangePolicy<DeviceType, TagFixPropertyMol_vcm_compute<1> >(0, nlocal), *this);
   } else {
-    if (neighflag == HALF) {
-      Kokkos::parallel_for(Kokkos::RangePolicy<DeviceType, TagFixPropertyMol_vcm_compute<HALF, 0> >(0, nlocal), *this);
-    } else if (neighflag == HALFTHREAD) {
-      Kokkos::parallel_for(Kokkos::RangePolicy<DeviceType, TagFixPropertyMol_vcm_compute<HALFTHREAD, 0> >(0, nlocal), *this);
-    } else if (neighflag == FULL) {
-      Kokkos::parallel_for(Kokkos::RangePolicy<DeviceType, TagFixPropertyMol_vcm_compute<FULL, 0> >(0, nlocal), *this);
-    }
+    Kokkos::parallel_for(Kokkos::RangePolicy<DeviceType, TagFixPropertyMol_vcm_compute<0> >(0, nlocal), *this);
   }
 
-  if(need_dup){
-    Kokkos::Experimental::contribute(d_vcmproc, dup_vcmproc);
-    Kokkos::Experimental::contribute(d_keproc, dup_keproc);
-  } else {
-    Kokkos::Experimental::contribute(d_vcmproc, ndup_vcmproc);
-    Kokkos::Experimental::contribute(d_keproc, ndup_keproc);
-  }
+  Kokkos::Experimental::contribute(d_vcmproc, scatter_vcmproc);
+  Kokkos::Experimental::contribute(d_keproc, scatter_keproc);
 
-  k_vcmproc.sync<DeviceType>();
-  k_keproc.sync<DeviceType>();
-
+  k_vcmproc.template modify<DeviceType>();
+  k_vcmproc.template sync<LMPHostType>();
+  k_keproc.template modify<DeviceType>();
+  k_keproc.template sync<LMPHostType>();
   MPI_Allreduce(k_vcmproc.h_view.data(),k_vcm.h_view.data(),3*molmax,MPI_DOUBLE,MPI_SUM,world);
   MPI_Allreduce(k_keproc.h_view.data(),k_ke_singles.h_view.data(), 6, MPI_DOUBLE, MPI_SUM, world);
+  k_vcm.modify<LMPHostType>();
   k_vcm.sync<DeviceType>();
+  k_ke_singles.modify<LMPHostType>();
   k_ke_singles.sync<DeviceType>();
 
   copymode = 1;
   Kokkos::parallel_for(Kokkos::RangePolicy<DeviceType, TagFixPropertyMol_vcm_scale>(0, molmax), *this);
   copymode = 0;
+  k_vcm.template modify<DeviceType>();
+  k_vcm.template sync<LMPHostType>();
 }
 
 template<class DeviceType>
+template<int RMASS>
 KOKKOS_INLINE_FUNCTION
-void FixPropertyMolKokkos<DeviceType>::operator()(TagFixPropertyMol_vcmproc_zero, const int& m) const
+void FixPropertyMolKokkos<DeviceType>::operator()(TagFixPropertyMol_vcm_compute<RMASS>, const int& i) const
 {
-  d_vcmproc(m, 0) = 0.0;
-  d_vcmproc(m, 1) = 0.0;
-  d_vcmproc(m, 2) = 0.0;
-}
-
-template<class DeviceType>
-template<int NEIGHFLAG, int RMASS>
-KOKKOS_INLINE_FUNCTION
-void FixPropertyMolKokkos<DeviceType>::operator()(TagFixPropertyMol_vcm_compute<NEIGHFLAG, RMASS>, const int& i) const
-{
-  auto v_vcmproc = ScatterViewHelper<NeedDup_v<NEIGHFLAG,DeviceType>,decltype(dup_vcmproc),decltype(ndup_vcmproc)>::get(dup_vcmproc,ndup_vcmproc);
-  auto a_vcmproc = v_vcmproc.template access<AtomicDup_v<NEIGHFLAG,DeviceType> >();
-  auto v_keproc = ScatterViewHelper<NeedDup_v<NEIGHFLAG,DeviceType>,decltype(dup_keproc),decltype(ndup_keproc)>::get(dup_keproc,ndup_keproc);
-  auto a_keproc = v_keproc.template access<AtomicDup_v<NEIGHFLAG,DeviceType> >();
+  auto a_vcmproc = scatter_vcmproc.access();
+  auto a_keproc = scatter_keproc.access();
   if(RMASS){
     if (groupbit & atom_mask[i]) {
       double massone = atom_rmass[i];

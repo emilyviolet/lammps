@@ -28,20 +28,16 @@ FixStyle(property/mol/kk/host,FixPropertyMolKokkos<LMPHostType>);
 #include "kokkos_few.h"
 
 namespace LAMMPS_NS {
-template<int NEIGHFLAG, int RMASS>
+template<int RMASS>
 struct TagFixPropertyMol_mass_compute{};
 
 struct TagFixPropertyMol_count{};
 
-struct TagFixPropertyMol_massproc_zero{};
-struct TagFixPropertyMol_comproc_zero{};
-struct TagFixPropertyMol_vcmproc_zero{};
-
-template<int NEIGHFLAG, int RMASS>
+template<int RMASS>
 struct TagFixPropertyMol_com_compute{};
 struct TagFixPropertyMol_com_scale{};
 
-template<int NEIGHFLAG, int RMASS>
+template<int RMASS>
 struct TagFixPropertyMol_vcm_compute{};
 struct TagFixPropertyMol_vcm_scale{};
 
@@ -87,26 +83,20 @@ class FixPropertyMolKokkos : public FixPropertyMol {
   void request_mass() override;    // Request that mass be allocated
 
 
-  template<int NEIGHFLAG, int RMASS>
+  template<int RMASS>
   KOKKOS_INLINE_FUNCTION
-  void operator()(TagFixPropertyMol_mass_compute<NEIGHFLAG, RMASS>, const int&) const;
+  void operator()(TagFixPropertyMol_mass_compute<RMASS>, const int&) const;
 
-  template<int NEIGHFLAG, int RMASS>
+  template<int RMASS>
   KOKKOS_INLINE_FUNCTION
-  void operator()(TagFixPropertyMol_com_compute<NEIGHFLAG, RMASS>, const int&) const;
+  void operator()(TagFixPropertyMol_com_compute<RMASS>, const int&) const;
 
-  template<int NEIGHFLAG, int RMASS>
+  template<int RMASS>
   KOKKOS_INLINE_FUNCTION
-  void operator()(TagFixPropertyMol_vcm_compute<NEIGHFLAG, RMASS>, const int&) const;
+  void operator()(TagFixPropertyMol_vcm_compute<RMASS>, const int&) const;
 
   KOKKOS_INLINE_FUNCTION
   void operator()(TagFixPropertyMol_count, const int&, tagint&) const;
-  KOKKOS_INLINE_FUNCTION
-  void operator()(TagFixPropertyMol_massproc_zero, const int&) const;
-  KOKKOS_INLINE_FUNCTION
-  void operator()(TagFixPropertyMol_comproc_zero, const int&) const;
-  KOKKOS_INLINE_FUNCTION
-  void operator()(TagFixPropertyMol_vcmproc_zero, const int&) const;
   
   KOKKOS_INLINE_FUNCTION
   void operator()(TagFixPropertyMol_com_scale, const int&) const;
@@ -117,7 +107,7 @@ class FixPropertyMolKokkos : public FixPropertyMol {
 
  protected:
 
-  //double *keproc;
+  // Per-molecule arrays
   typename DAT::tdual_float_1d k_massproc;
   typename DAT::tdual_x_array k_comproc;
   typename DAT::tdual_v_array k_vcmproc;
@@ -126,9 +116,9 @@ class FixPropertyMolKokkos : public FixPropertyMol {
   typename AT::t_float_1d d_massproc;
   typename AT::t_x_array d_comproc;
   typename AT::t_v_array d_vcmproc;
-  //Few<double, 6> keproc; 
   typename AT::t_float_1d d_keproc;
 
+  // Per-atom arrays
   typename AT::t_x_array atom_x;
   typename AT::t_v_array atom_v;
   typename AT::t_float_1d atom_rmass;
@@ -152,17 +142,15 @@ class FixPropertyMolKokkos : public FixPropertyMol {
   using NonDupScatterView = KKScatterView<DataType, Layout, KKDeviceType, KKScatterSum, KKScatterNonDuplicated>;
 
   // Scatter views to use when calculating the per-molecule arrays across multiple threads
-  DupScatterView<double*, typename AT::t_float_1d::array_layout> dup_massproc;
-  DupScatterView<X_FLOAT*[3], typename AT::t_x_array::array_layout> dup_comproc;
+  KKScatterView<double*, typename AT::t_float_1d::array_layout, KKDeviceType, KKScatterSum> scatter_massproc;
+  KKScatterView<double*[3], typename AT::t_x_array::array_layout, KKDeviceType, KKScatterSum> scatter_comproc;
+  KKScatterView<double*[3], typename AT::t_v_array::array_layout, KKDeviceType, KKScatterSum> scatter_vcmproc;
+  KKScatterView<double*, typename AT::t_float_1d::array_layout, KKDeviceType, KKScatterSum> scatter_keproc;
   DupScatterView<X_FLOAT*[3], typename AT::t_v_array::array_layout> dup_vcmproc;
   DupScatterView<double*, typename AT::t_float_1d::array_layout> dup_keproc;
 
-  NonDupScatterView<double*, typename AT::t_float_1d::array_layout> ndup_massproc;
-  NonDupScatterView<X_FLOAT*[3], typename AT::t_x_array::array_layout> ndup_comproc;
   NonDupScatterView<X_FLOAT*[3], typename AT::t_v_array::array_layout> ndup_vcmproc;
   NonDupScatterView<double*, typename AT::t_float_1d::array_layout> ndup_keproc;
-
-  int neighflag, need_dup;
 
 };
 
