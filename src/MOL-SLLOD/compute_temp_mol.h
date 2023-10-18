@@ -33,20 +33,21 @@ class ComputeTempMol : public Compute {
   double compute_scalar() override;
   void compute_vector() override;
 
-  double memory_usage() override;
+  //double memory_usage() override;
 
   // TODO(SS): centralise vcm_compute() to fix property/mol?
-  void vcm_compute(double *ke_singles = nullptr);
+  //void vcm_compute(double *ke_singles = nullptr);
 
  protected:
   char *id_molprop;
   class FixPropertyMol *molprop;
 
+  void dof_compute();
+
  private:
   int nmax;
   double adof, cdof, tfactor;
 
-  void dof_compute();
   void allocate();
 };
 

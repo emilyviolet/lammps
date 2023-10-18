@@ -67,8 +67,10 @@ ComputeTempMol::ComputeTempMol(LAMMPS *lmp, int narg, char **arg) :
 
 ComputeTempMol::~ComputeTempMol()
 {
-  delete [] vector;
-  delete [] id_molprop;
+  if (!copymode) {
+    delete [] vector;
+    delete [] id_molprop;
+  }
 }
 
 /* ---------------------------------------------------------------------- */
@@ -222,12 +224,12 @@ void ComputeTempMol::dof_compute()
    memory usage of local data
 ------------------------------------------------------------------------- */
 
-double ComputeTempMol::memory_usage()
-{
-  double bytes = 0;
-  // vcm and vcmall not allocated if property_molecule is nullptr
-  if (molprop != nullptr)
-    bytes += (bigint) molprop->molmax * 6 * sizeof(double);
-
-  return bytes;
-}
+//double ComputeTempMol::memory_usage()
+//{
+//  double bytes = 0;
+//  // vcm and vcmall not allocated if property_molecule is nullptr
+//  if (molprop != nullptr)
+//    bytes += (bigint) molprop->molmax * 6 * sizeof(double);
+//
+//  return bytes;
+//}
