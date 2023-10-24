@@ -229,13 +229,18 @@ void ComputeTempMolKokkos<DeviceType>::dof_compute()
         "constraints should be ignored.");
 
   // Count atoms in the group that aren't part of a molecule
-  //int *mask = atom->mask;
   mask = atomKK->k_mask.view<DeviceType>();
+  molID = atomKK->k_molecule.view<DeviceType>();
   //todo - check if correct
   int nlocal = atom->nlocal;
   bigint nsingle_local = 0, nsingle;
+
+  // Local shallow copies for LAMBDA
+  auto l_mask = this->mask;
+  auto l_groupbit = this->groupbit;
+  auto l_molID = this->molID;
   Kokkos::parallel_reduce(nlocal, LAMMPS_LAMBDA(int i, bigint& nsingle_local) {
-    if (mask[i] & groupbit && atom->molecule[i] == 0)
+    if (l_mask[i] & l_groupbit && l_molID[i] == 0)
       nsingle_local += 1;
   }, nsingle_local);
 
@@ -259,19 +264,6 @@ void ComputeTempMolKokkos<DeviceType>::dof_compute()
   else
     tfactor = 0.0;
 }
-
-/* ----------------------------------------------------------------------
-   memory usage of local data
-------------------------------------------------------------------------- */
-//template <class DeviceType>
-//double ComputeTempMolKokkos<DeviceType>::memory_usage()
-//{
-//  double bytes = 0;
-//  if (molpropKK != nullptr)
-//    bytes += (bigint) molpropKK->molmax * 6 * sizeof(double);
-//
-//  return bytes;
-//}
 
 namespace LAMMPS_NS {
 template class ComputeTempMolKokkos<LMPDeviceType>;
