@@ -74,14 +74,16 @@ class ComputeTempMolKokkos : public ComputeTempMol {
   ComputeTempMolKokkos(class LAMMPS *, int, char **);
   ~ComputeTempMolKokkos() override;
 
-  //~ComputeTempMolKokkos() override;
   void init() override;
   void setup() override;
   double compute_scalar() override;
   void compute_vector() override;
   void dof_compute();
 
+  KOKKOS_INLINE_FUNCTION
   void operator()(TagComputeTempMolScalar, const int&, CTEMP&) const;
+
+  KOKKOS_INLINE_FUNCTION
   void operator()(TagComputeTempMolVector, const int&, CTEMP&) const;
  protected:
   char *id_molpropKK;

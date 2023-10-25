@@ -45,27 +45,15 @@ ComputeTempMolKokkos<DeviceType>::ComputeTempMolKokkos(LAMMPS *lmp, int narg, ch
   id_molpropKK(nullptr)
 {
   kokkosable = 1;
-  if (narg != 4) error->all(FLERR,"Illegal compute temp/mol command");
+  execution_space = ExecutionSpaceFromDevice<DeviceType>::space;
 
-  scalar_flag = vector_flag = 1;
-  size_vector = 6;
-  extscalar = 0;
-  extvector = 1;  // TODO(SS): if thermo_modify norm yes is set, then the vector will be divided by the number of atoms, which is incorrect.
-  tempflag = 1;
-  tempbias = 0;
-  maxbias = 0;
-  array_flag = 0;
+  datamask_read = V_MASK | MASK_MASK | RMASS_MASK | TYPE_MASK;
+  datamask_modify = EMPTY_MASK;
 
   domainKK = (DomainKokkos *) domain;
   atomKK = (AtomKokkos *) atom;
   adof = domainKK->dimension;
   cdof = 0.0;
-
-  // vector data
-  vector = new double[size_vector];
-
-  // per-atom allocation
-  nmax = 0;
 
   id_molpropKK = utils::strdup(arg[3]);
 }
@@ -86,8 +74,6 @@ void ComputeTempMolKokkos<DeviceType>::init()
   molpropKK = dynamic_cast<FixPropertyMolKokkos<DeviceType> *>(modify->get_fix_by_id(id_molpropKK));
   if (molpropKK == nullptr)
     error->all(FLERR, "Compute temp/mol could not find a fix property/mol with id {}", id_molpropKK);
-  // if (!molpropKK->mass_flag)
-  //   error->all(FLERR, "Compute temp/mol requires fix property/mol with the mass or com flag");
   if (igroup != molpropKK->igroup)
     error->all(FLERR, "Fix property/mol must be defined for the same group as compute temp/mol");
 
@@ -109,12 +95,11 @@ void ComputeTempMolKokkos<DeviceType>::setup()
 template<class DeviceType>
 double ComputeTempMolKokkos<DeviceType>::compute_scalar()
 {
-  int i;
   invoked_scalar = update->ntimestep;
 
   tagint molmax = molpropKK->molmax;
 
-  molmass = molpropKK->k_mass.template view<DeviceType>();//.template view<DeviceType()>;
+  molmass = molpropKK->k_mass.template view<DeviceType>();
   vcm = molpropKK->k_vcm.template view<device_type>();
   double* ke_singles = molpropKK->ke_singles;
 
@@ -123,8 +108,6 @@ double ComputeTempMolKokkos<DeviceType>::compute_scalar()
   rmass = atomKK->k_rmass.view<DeviceType>();
   type = atomKK->k_type.view<DeviceType>();
   mask = atomKK->k_mask.view<DeviceType>();
-  int nlocal = atomKK->nlocal;
-  tagint m;
 
   molpropKK->vcm_compute();
   // Tally up the molecule COM velocities to get the kinetic temperature
@@ -132,7 +115,6 @@ double ComputeTempMolKokkos<DeviceType>::compute_scalar()
   double t = ke_singles[0]+ke_singles[1]+ke_singles[2];
   CTEMP t_kk;
 
-  // No need for MPI reductions, since every processor knows the molecule VCMs
   copymode = 1;
   Kokkos::parallel_reduce(Kokkos::RangePolicy<DeviceType, TagComputeTempMolScalar>(0, molmax), *this, t_kk);
   copymode = 0;
@@ -160,8 +142,6 @@ void ComputeTempMolKokkos<DeviceType>::operator()(TagComputeTempMolScalar, const
 template<class DeviceType>
 void ComputeTempMolKokkos<DeviceType>::compute_vector()
 {
-  int i;
-
   invoked_vector = update->ntimestep;
 
   tagint molmax = molpropKK->molmax;
@@ -175,15 +155,12 @@ void ComputeTempMolKokkos<DeviceType>::compute_vector()
   type = atomKK->k_type.view<DeviceType>();
   mask = atomKK->k_mask.view<DeviceType>();
 
-  int nlocal = atom->nlocal;
-  tagint m;
-
-  double massone,t[6];
+  double t[6];
+  int i;
   for (i = 0; i < 6; i++) t[i] = 0.0;
 
   molpropKK->vcm_compute();
   // Tally up the molecule COM velocities to get the kinetic temperature
-  // No need for MPI reductions, since every processor knows the molecule VCMs
   CTEMP t_kk;
   copymode = 1;
   Kokkos::parallel_reduce(Kokkos::RangePolicy<DeviceType, TagComputeTempMolVector>(0, molmax), *this, t_kk);
