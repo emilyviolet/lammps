@@ -409,6 +409,8 @@ void FixPropertyMolKokkos<DeviceType>::operator()(TagFixPropertyMol_com_compute<
       if(m < 0) return;
       double massone = atom_rmass[i];
       // Need to unwrap the coords. Make a Kokkos Few first to interface with domainKK
+      // TODO EVK: Also, this probably needs to get hoisted outside the kernel so we're not
+      // constantly allocating memory
       Few<double, 3> x_i;
       x_i[0] = atom_x(i, 0);
       x_i[1] = atom_x(i, 1);

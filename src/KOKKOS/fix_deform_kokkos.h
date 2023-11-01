@@ -37,6 +37,13 @@ class FixDeformKokkos : public FixDeform {
  private:
   class DomainKokkos *domainKK;
 
+ // For correctness checking of set[i].style
+ template <class DeviceType>
+ friend class FixNVTSllodKokkos;
+
+ template <class DeviceType>
+ friend class FixNVTSllodMolKokkos;
+
 };
 
 }

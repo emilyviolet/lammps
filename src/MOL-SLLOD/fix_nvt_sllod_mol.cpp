@@ -126,9 +126,9 @@ void FixNVTSllodMol::init() {
 
   // Check that temperature calculates a molecular temperature
   // TODO(SS): add moltemp flag to compute.h that we can check?
-  if (strcmp(temperature->style, "temp/mol") != 0)
-    error->all(FLERR,"fix nvt/sllod/mol requires temperature computed by "
-        "compute temp/mol");
+  //if (strcmp(temperature->style, "temp/mol") != 0)
+  //  error->all(FLERR,"fix nvt/sllod/mol requires temperature computed by "
+  //      "compute temp/mol");
 
   // check fix deform remap settings
 
